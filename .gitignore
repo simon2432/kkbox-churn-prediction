@@ -1,11 +1,9 @@
 # =============================================================================
-# Data — never commit raw or processed data to Git
+# Data — never commit raw or processed CSVs to Git
 # =============================================================================
-data/raw/
-data/processed/
-
-# Exception: keep the data folder structure itself
+data/raw/*
 !data/raw/.gitkeep
+data/processed/*
 !data/processed/.gitkeep
 
 # Large archive
