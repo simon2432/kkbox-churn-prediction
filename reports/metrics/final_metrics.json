@@ -1,0 +1,20 @@
+{
+  "roc_auc": 0.7778,
+  "avg_precision": 0.4758,
+  "precision_at_0.5": 0.2855,
+  "recall_at_0.5": 0.5751,
+  "f1_at_0.5": 0.3815,
+  "val_churn_rate": 0.0899,
+  "n_val": 194192,
+  "n_val_churners": 17466,
+  "model": "LightGBM",
+  "pipeline": "v2",
+  "n_features": 44,
+  "recall_at_K": {
+    "5000": 0.2382,
+    "10000": 0.3606,
+    "25000": 0.5112,
+    "50000": 0.6411,
+    "100000": 0.8015
+  }
+}

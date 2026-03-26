@@ -1,175 +1,169 @@
-# KKBox Churn Prediction
+# KKBox Churn Prediction & Customer Risk Ranking
 
-Predicting subscriber churn for KKBox, Taiwan's leading music streaming service.  
-This project is based on the [WSDM - KKBox's Churn Prediction Challenge](https://www.kaggle.com/c/kkbox-churn-prediction-challenge) dataset from Kaggle.
-
----
-
-## Problem Statement
-
-Given a user's subscription and transaction history, predict whether they will churn (not renew their subscription) in the following month.
-
-- **Target variable:** `is_churn` from `train_v2.csv`
-- **Positive class (1):** user churns — does not renew their subscription
-- **Negative class (0):** user renews their subscription
+Churn prediction project built on the [WSDM 2018 KKBox Churn Prediction Challenge](https://www.kaggle.com/c/kkbox-churn-prediction-challenge). The goal goes beyond binary classification — the output is a ranked list of users by churn probability so a retention team can prioritize who to contact when they can't reach everyone.
 
 ---
 
-## Project Structure
+## The problem
+
+KKBox is a music streaming subscription service. A user churns if they don't renew within 30 days of their plan expiring. The label (`is_churn`) is already built correctly in `train_v2.csv` — no need to reconstruct it. Important: `is_cancel` does not define churn, it just flags whether the user explicitly cancelled before expiry.
+
+With ~9% churn rate across ~970k users, a binary classifier that just predicts the majority class gets 91% accuracy and is useless. The useful question is: **given a limited outreach budget, which users should we contact first?** That's what the model is actually optimized for.
+
+The final LightGBM model, at threshold 0.5 on the validation set, captures 57.5% of churners while contacting only 23.6% of users. More usefully — ranking by predicted probability, the top 13% of users by risk captures 51% of churners.
+
+---
+
+## Dataset
+
+| File                  | What it contains                                  |
+| --------------------- | ------------------------------------------------- |
+| `train_v2.csv`        | User IDs and churn labels                         |
+| `members_v3.csv`      | Demographics: city, age, gender, registration     |
+| `transactions_v2.csv` | Payment history: plan, price, dates, cancellation |
+| `user_logs_v2.csv`    | Daily listening logs (March 2017)                 |
+
+~970k users total.
+
+---
+
+## Temporal handling
+
+Transaction features are computed using only records up to **2017-02-28** — anything after that would be post-expiry data for a chunk of users, which leaks the target.
+
+The listening logs (`user_logs_v2.csv`) cover March 2017 and are used intentionally: activity in the period right before a subscription expires is a strong behavioral signal. Users with no log records in this window get features filled with 0, which turns out to be informative on its own — silent users churn more.
+
+---
+
+## Features
+
+Two pipeline versions:
+
+**Pipeline v1** (26 features): transaction recency/frequency, last payment snapshot, auto-renewal and cancellation flags, member demographics, user log aggregates (listening time, active days, completion rate, log recency).
+
+**Pipeline v2** (44 features): everything in v1, plus price-per-day and payment deviation from the user's own median, plan switches, 10-day and 30-day activity windows from the logs, completion ratio, and a few binary interaction flags (e.g. low usage + no auto-renew).
+
+Both are reproducible from raw data:
+
+```bash
+python scripts/build_processed_datasets.py                       # v1 → df_model_v1.csv
+python scripts/build_processed_datasets.py --pipeline-version 2  # v2 → df_model_v2.csv
+```
+
+---
+
+## Models
+
+Evaluated on a single 80/20 stratified holdout (seed=42, ~194k validation users):
+
+| Model                             | ROC AUC   | Avg Precision |
+| --------------------------------- | --------- | ------------- |
+| **LightGBM**                      | **0.778** | **0.476**     |
+| XGBoost                           | 0.779     | 0.476         |
+| HistGradientBoosting (sklearn)    | 0.779     | 0.474         |
+| GradientBoosting (200k subsample) | 0.772     | 0.464         |
+| Random Forest                     | 0.768     | 0.453         |
+
+LightGBM and XGBoost are essentially tied. LightGBM was chosen for the final model — faster to train and slightly easier to configure for early stopping. The gap over Random Forest (~+0.01 AUC) is consistent across runs.
+
+The baseline logistic regression from the first iteration sat at ~0.62 AUC. The biggest single improvement came from adding the log features (+~0.10 AUC jump going from notebook 05 to 06).
+
+---
+
+## Results (validation set)
+
+| Metric            | Value |
+| ----------------- | ----- |
+| ROC AUC           | 0.778 |
+| Average Precision | 0.476 |
+| Precision @ 0.5   | 0.286 |
+| Recall @ 0.5      | 0.575 |
+| F1 @ 0.5          | 0.382 |
+
+Ranking by predicted probability:
+
+| Users contacted | Share of population | Churners captured |
+| --------------- | ------------------- | ----------------- |
+| 5,000           | 2.6%                | 23.8%             |
+| 10,000          | 5.1%                | 36.1%             |
+| 25,000          | 12.9%               | 51.1%             |
+| 50,000          | 25.7%               | 64.1%             |
+| 100,000         | 51.5%               | 80.2%             |
+
+A random list of 25,000 users would capture ~2.6% of churners. The model gets to 51% with the same budget.
+
+---
+
+## Iteration history
+
+| Notebook                                   | Model               | ROC AUC | What changed                                     |
+| ------------------------------------------ | ------------------- | ------- | ------------------------------------------------ |
+| `04_baseline_model.ipynb`                  | Logistic Regression | ~0.620  | 9 transaction/member features                    |
+| `05_iteration_v2_features_and_trees.ipynb` | Random Forest       | ~0.673  | +6 transaction features, switched to trees       |
+| `06_iteration_v3_user_logs.ipynb`          | LightGBM            | ~0.776  | +11 log activity features                        |
+| `07_pipeline_v2_boosting_ranking.ipynb`    | LightGBM            | 0.778   | Full pipeline v2, added XGBoost, ranking metrics |
+
+Detailed write-ups: `docs/iterations/v1.md` (notebooks 01–06) and `docs/iterations/v2_final.md` (notebook 07 + final model).
+
+---
+
+## Repo structure
 
 ```
 kkbox-ml/
 ├── data/
-│   ├── raw/              # Original Kaggle CSVs (gitignored; .gitkeep keeps the folder)
-│   └── processed/        # Intermediate CSVs (gitignored; .gitkeep keeps the folder)
-├── notebooks/
-│   ├── 01_eda_train_members.ipynb           # EDA on train_v2 + members_v3
-│   ├── 02_eda_transactions_features.ipynb   # Transactions EDA + df_model_baseline_v1.csv
-│   ├── 03_eda_user_logs.ipynb               # User logs EDA + log_features_march2017.csv
-│   ├── 04_baseline_model.ipynb              # Logistic regression baseline
-│   ├── 05_iteration_v2_features_and_trees.ipynb  # v2 features + tree models
-│   └── 06_iteration_v3_user_logs.ipynb      # Log features + RF / LightGBM
+│   ├── raw/              # Kaggle CSVs (gitignored)
+│   └── processed/        # Pipeline outputs (gitignored)
 ├── docs/
 │   └── iterations/
-│       └── v1.md            # notebooks 01–06 + pipeline v1 (single write-up)
+│       ├── v1.md         # EDA through notebook 06
+│       └── v2_final.md   # Pipeline v2 and final model
+├── notebooks/
+│   ├── 01_eda_train_members.ipynb
+│   ├── 02_eda_transactions_features.ipynb
+│   ├── 03_eda_user_logs.ipynb
+│   ├── 04_baseline_model.ipynb
+│   ├── 05_iteration_v2_features_and_trees.ipynb
+│   ├── 06_iteration_v3_user_logs.ipynb
+│   ├── 07_pipeline_v2_boosting_ranking.ipynb
+│   └── 08_final_model_and_ranking.ipynb
+├── reports/
+│   ├── metrics/          # final_metrics.json + figures
+│   └── top_users/        # top 1/5/10% by risk score
 ├── scripts/
-│   └── build_processed_datasets.py   # raw → processed (pipeline v1 / v2)
+│   └── build_processed_datasets.py
 ├── src/
-│   ├── __init__.py
-│   ├── pipeline.py         # Version registry (load_pipeline) + DEFAULT_PIPELINE_VERSION
-│   ├── pipeline_v1.py      # Pipeline v1 — frozen notebook parity (26 features)
-│   ├── pipeline_v2.py      # Extended features (windows, interactions, …)
-│   └── utils.py            # Notebook helpers; follows DEFAULT_PIPELINE_VERSION
+│   ├── pipeline_v1.py
+│   ├── pipeline_v2.py
+│   ├── pipeline.py
+│   └── utils.py
 ├── requirements.txt
-├── .gitignore
-└── README.md
+└── .gitignore
 ```
 
 ---
 
-## Datasets
-
-All raw data comes from the Kaggle competition. Files are stored in `data/raw/` and are excluded from version control due to their size.
-
-| File                  | Description                             | Size    |
-| --------------------- | --------------------------------------- | ------- |
-| `train_v2.csv`        | Labels: msno + is_churn                 | ~44 MB  |
-| `members_v3.csv`      | User demographics and registration info | ~408 MB |
-| `transactions_v2.csv` | Subscription transaction history        | ~110 MB |
-| `user_logs_v2.csv`    | Daily listening activity logs           | ~1.3 GB |
-| `transactions.csv`    | Full historical transactions (larger)   | ~1.6 GB |
-| `user_logs.csv`       | Full historical user logs               | ~28 GB  |
-
-To run the notebooks, download the data from Kaggle and place all CSV files in `data/raw/`.
-
----
-
-## Iterations
-
-Full write-up (data treatment, notebooks 01–06, models, pipeline v1): **[`docs/iterations/v1.md`](docs/iterations/v1.md)**.
-
-| Stage (in v1 doc) | Description                                          | Val ROC AUC (best model in notebook) | Notes                                                          |
-| ----------------- | ---------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------- |
-| Baseline (nb 04)  | Logistic regression, 9 transaction + member features | ~0.567                               | Cutoff 2017-02-28. No class weights.                           |
-| +txn v2 (nb 05)   | +6 transaction features; DT + RF                     | **~0.673**                           | RF `class_weight='balanced'`. High recall at lower thresholds. |
-| +logs v3 (nb 06)  | +11 log aggregates; RF + **LightGBM**                | **~0.776**                           | Single stratified 80/20 split; see thresholds in v1 doc.       |
-
----
-
-## Best results so far (notebook 06 / v3 feature set)
-
-- **Model:** LightGBM (`n_estimators=500`, `learning_rate=0.05`, `max_depth=6`, `class_weight='balanced'`, early stopping on validation)
-- **Train/validation split:** 80/20, stratified (`random_state=42`)
-- **ROC AUC (validation):** **0.776** (vs. 0.673 for the best v2 Random Forest on the same comparison table in notebook 06)
-- **At threshold 0.5:** recall (churn) **0.57**, precision **0.28** — both higher than the v2 RF at 0.5 in that notebook
-- **Top signal:** log recency (`days_since_last_log`) leads Random Forest feature importance on v3 features; log-related columns account for ~54% of total RF importance in that run
-
-Write-up: [`docs/iterations/v1.md`](docs/iterations/v1.md).
-
----
-
-## How to Run
-
-### 1. Set up the environment
-
-From the repo root:
+## How to run
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`lightgbm` is included for `06_iteration_v3_user_logs.ipynb`; if you skip that notebook you can omit it.
-
-With conda:
+Put the Kaggle CSVs in `data/raw/`, then build the dataset:
 
 ```bash
-conda create -n kkbox python=3.10
-conda activate kkbox
-pip install -r requirements.txt
-```
-
-### 2. Get the data
-
-Download the competition data from:  
-https://www.kaggle.com/c/kkbox-churn-prediction-challenge/data
-
-Place all CSV files inside `data/raw/`.
-
-### 3. Run the notebooks in order
-
-```
-notebooks/01_eda_train_members.ipynb
-notebooks/02_eda_transactions_features.ipynb   → data/processed/df_model_baseline_v1.csv
-notebooks/03_eda_user_logs.ipynb                 → data/processed/log_features_march2017.csv
-notebooks/04_baseline_model.ipynb
-notebooks/05_iteration_v2_features_and_trees.ipynb
-notebooks/06_iteration_v3_user_logs.ipynb        # needs log_features_march2017.csv + baseline CSV
-```
-
-### 4. Reproducible pipeline (recommended)
-
-**One command** reads all required raw CSVs, runs every transformation in memory, and writes **a single file**:
-
-| Output                           | Contents                                                                                                                                                                                                                                                                  |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `data/processed/df_model_v1.csv` | `msno`, `is_churn`, 26 features (NaNs → 0) — notebook parity                                                                                                                                                                                                              |
-| `data/processed/df_model_v2.csv` | v1 + 10d/30d log windows, `completion_ratio` (drops `completion_rate`), `avg_secs_per_active_day`, `std_usage`; usage-based interactions use median on an 80% stratified calibration split (`INTERACTION_RANDOM_STATE`); extra interaction flags — `--pipeline-version 2` |
-
-```bash
-# From the repository root (requires train_v2, members_v3, transactions_v2, user_logs_v2 in data/raw/)
-python scripts/build_processed_datasets.py
 python scripts/build_processed_datasets.py --pipeline-version 2
 ```
 
-**Pipeline versions:** `--pipeline-version 1` → `src/pipeline_v1.py` (default). **`--pipeline-version 2`** → `src/pipeline_v2.py`. Compare outputs with different `--out-dir` folders. Default for `src/utils.py`: **`DEFAULT_PIPELINE_VERSION`** in `src/pipeline.py`.
+Open `notebooks/08_final_model_and_ranking.ipynb` — this trains the final model, generates the churn ranking, and saves everything to `reports/`.
 
-Custom paths: `--raw-dir` / `--out-dir`
-
-**Note:** Notebooks 02–03 may still save intermediate CSVs for teaching/EDA; the CLI pipeline does **not** create those. For modelling, you can load **`df_model_v1.csv`** directly (e.g. simplify notebook 06 to a single `read_csv`).
-
-Implementation: **`src/pipeline_v1.py`** / **`src/pipeline_v2.py`** (`build_final_dataframe`, `run_full_pipeline`); **`src/pipeline.py`** — version registry (`load_pipeline`).
+The notebooks 01–07 are meant to be read in sequence. They document the decisions at each step, not just the final numbers.
 
 ---
 
-## Class imbalance
+## What's missing / next steps
 
-Roughly **91%** non-churn vs. **9%** churn. That inflates accuracy and makes naive models shy about flagging churners. From notebook 05 onward, tree models use **`class_weight='balanced'`** so the minority class matters in training; threshold tuning (see [`docs/iterations/v1.md`](docs/iterations/v1.md)) still controls precision vs. recall at deployment time.
-
----
-
-## Next steps
-
-- [x] Class-aware training (`class_weight='balanced'`) and tree models — see [`docs/iterations/v1.md`](docs/iterations/v1.md)
-- [x] User log aggregates merged into the modelling frame — see v1 doc
-- [x] Random Forest and LightGBM on the expanded feature set — see v1 doc
-- [ ] **Cross-validation** (replace single holdout metrics)
-- [ ] **Richer transaction features** (renewal gaps, plan-change sequences)
-- [ ] **Threshold / cost-sensitive** decisions tied to a real retention budget
-- [ ] **Submission pipeline** (test predictions, Kaggle-format CSV)
-
----
-
-## References
-
-- [WSDM KKBox Churn Prediction Challenge](https://www.kaggle.com/c/kkbox-churn-prediction-challenge)
-- [WSDMChurnLabeller.scala](data/raw/WSDMChurnLabeller.scala) — official label generation logic from KKBox
+- No cross-validation — all metrics are from a single split. The numbers are stable across seeds but CV would tighten the error bars.
+- No uplift modeling — the risk score tells you who's likely to churn, not who's likely to respond to a retention action. Those aren't the same thing.
+- Threshold hasn't been tuned to a business cost function. At 0.5 the precision/recall tradeoff is arbitrary.
+- SHAP would be useful for explaining individual predictions to stakeholders.
