@@ -10,13 +10,8 @@ data/processed/*
 *.zip
 
 # =============================================================================
-# Jupyter Notebooks — strip outputs before committing (optional)
+# Jupyter Notebooks
 # =============================================================================
-# Uncomment the lines below if you use nbstripout to auto-clean outputs
-# .ipynb_checkpoints/
-# */.ipynb_checkpoints/
-
-# Notebook checkpoints
 .ipynb_checkpoints/
 */.ipynb_checkpoints/
 

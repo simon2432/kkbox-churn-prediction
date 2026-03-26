@@ -31,13 +31,15 @@ kkbox-ml/
 │   └── 06_iteration_v3_user_logs.ipynb      # Log features + RF / LightGBM
 ├── docs/
 │   └── iterations/
-│       ├── baseline_v1.md
-│       ├── iteration_v2.md
-│       └── v3_user_logs.md
+│       └── v1.md            # notebooks 01–06 + pipeline v1 (single write-up)
+├── scripts/
+│   └── build_processed_datasets.py   # raw → processed (pipeline v1 / v2)
 ├── src/
 │   ├── __init__.py
-│   ├── features.py         # Feature engineering helpers
-│   └── utils.py            # Shared utilities
+│   ├── pipeline.py         # Version registry (load_pipeline) + DEFAULT_PIPELINE_VERSION
+│   ├── pipeline_v1.py      # Pipeline v1 — frozen notebook parity (26 features)
+│   ├── pipeline_v2.py      # Extended features (windows, interactions, …)
+│   └── utils.py            # Notebook helpers; follows DEFAULT_PIPELINE_VERSION
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -64,15 +66,17 @@ To run the notebooks, download the data from Kaggle and place all CSV files in `
 
 ## Iterations
 
-| Version | Description | Val ROC AUC (best model in notebook) | Notes |
-| ------- | ----------- | ------------------------------------ | ----- |
-| `baseline_v1` | Logistic regression, 9 transaction + member features | 0.567 | Cutoff 2017-02-28. No class weights. |
-| `iteration_v2` | +6 transaction features; DT + RF | **0.673** | RF `class_weight='balanced'`. Recall ~0.84 at threshold 0.4 (see v2 doc). |
-| `iteration_v3` | +11 log aggregates (March 2017); RF + **LightGBM** | **0.776** | Single stratified 80/20 split. See threshold table in v3 doc. |
+Full write-up (data treatment, notebooks 01–06, models, pipeline v1): **[`docs/iterations/v1.md`](docs/iterations/v1.md)**.
+
+| Stage (in v1 doc) | Description                                          | Val ROC AUC (best model in notebook) | Notes                                                          |
+| ----------------- | ---------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------- |
+| Baseline (nb 04)  | Logistic regression, 9 transaction + member features | ~0.567                               | Cutoff 2017-02-28. No class weights.                           |
+| +txn v2 (nb 05)   | +6 transaction features; DT + RF                     | **~0.673**                           | RF `class_weight='balanced'`. High recall at lower thresholds. |
+| +logs v3 (nb 06)  | +11 log aggregates; RF + **LightGBM**                | **~0.776**                           | Single stratified 80/20 split; see thresholds in v1 doc.       |
 
 ---
 
-## Best results so far (iteration v3)
+## Best results so far (notebook 06 / v3 feature set)
 
 - **Model:** LightGBM (`n_estimators=500`, `learning_rate=0.05`, `max_depth=6`, `class_weight='balanced'`, early stopping on validation)
 - **Train/validation split:** 80/20, stratified (`random_state=42`)
@@ -80,7 +84,7 @@ To run the notebooks, download the data from Kaggle and place all CSV files in `
 - **At threshold 0.5:** recall (churn) **0.57**, precision **0.28** — both higher than the v2 RF at 0.5 in that notebook
 - **Top signal:** log recency (`days_since_last_log`) leads Random Forest feature importance on v3 features; log-related columns account for ~54% of total RF importance in that run
 
-Write-ups: [`docs/iterations/baseline_v1.md`](docs/iterations/baseline_v1.md), [`docs/iterations/iteration_v2.md`](docs/iterations/iteration_v2.md), [`docs/iterations/v3_user_logs.md`](docs/iterations/v3_user_logs.md).
+Write-up: [`docs/iterations/v1.md`](docs/iterations/v1.md).
 
 ---
 
@@ -122,19 +126,42 @@ notebooks/05_iteration_v2_features_and_trees.ipynb
 notebooks/06_iteration_v3_user_logs.ipynb        # needs log_features_march2017.csv + baseline CSV
 ```
 
+### 4. Reproducible pipeline (recommended)
+
+**One command** reads all required raw CSVs, runs every transformation in memory, and writes **a single file**:
+
+| Output                           | Contents                                                                                                                                                                                                                                                                  |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `data/processed/df_model_v1.csv` | `msno`, `is_churn`, 26 features (NaNs → 0) — notebook parity                                                                                                                                                                                                              |
+| `data/processed/df_model_v2.csv` | v1 + 10d/30d log windows, `completion_ratio` (drops `completion_rate`), `avg_secs_per_active_day`, `std_usage`; usage-based interactions use median on an 80% stratified calibration split (`INTERACTION_RANDOM_STATE`); extra interaction flags — `--pipeline-version 2` |
+
+```bash
+# From the repository root (requires train_v2, members_v3, transactions_v2, user_logs_v2 in data/raw/)
+python scripts/build_processed_datasets.py
+python scripts/build_processed_datasets.py --pipeline-version 2
+```
+
+**Pipeline versions:** `--pipeline-version 1` → `src/pipeline_v1.py` (default). **`--pipeline-version 2`** → `src/pipeline_v2.py`. Compare outputs with different `--out-dir` folders. Default for `src/utils.py`: **`DEFAULT_PIPELINE_VERSION`** in `src/pipeline.py`.
+
+Custom paths: `--raw-dir` / `--out-dir`
+
+**Note:** Notebooks 02–03 may still save intermediate CSVs for teaching/EDA; the CLI pipeline does **not** create those. For modelling, you can load **`df_model_v1.csv`** directly (e.g. simplify notebook 06 to a single `read_csv`).
+
+Implementation: **`src/pipeline_v1.py`** / **`src/pipeline_v2.py`** (`build_final_dataframe`, `run_full_pipeline`); **`src/pipeline.py`** — version registry (`load_pipeline`).
+
 ---
 
 ## Class imbalance
 
-Roughly **91%** non-churn vs. **9%** churn. That inflates accuracy and makes naive models shy about flagging churners. From iteration v2 onward, tree models use **`class_weight='balanced'`** so the minority class matters in training; threshold tuning (see the iteration docs) still controls precision vs. recall at deployment time.
+Roughly **91%** non-churn vs. **9%** churn. That inflates accuracy and makes naive models shy about flagging churners. From notebook 05 onward, tree models use **`class_weight='balanced'`** so the minority class matters in training; threshold tuning (see [`docs/iterations/v1.md`](docs/iterations/v1.md)) still controls precision vs. recall at deployment time.
 
 ---
 
 ## Next steps
 
-- [x] Class-aware training (`class_weight='balanced'`) and tree models — see v2/v3
-- [x] User log aggregates merged into the modelling frame — see v3
-- [x] Random Forest and LightGBM on the expanded feature set — see v3
+- [x] Class-aware training (`class_weight='balanced'`) and tree models — see [`docs/iterations/v1.md`](docs/iterations/v1.md)
+- [x] User log aggregates merged into the modelling frame — see v1 doc
+- [x] Random Forest and LightGBM on the expanded feature set — see v1 doc
 - [ ] **Cross-validation** (replace single holdout metrics)
 - [ ] **Richer transaction features** (renewal gaps, plan-change sequences)
 - [ ] **Threshold / cost-sensitive** decisions tied to a real retention budget
